@@ -1,204 +1,80 @@
+import os, json, threading
+from http.server import BaseHTTPRequestHandler, HTTPServer
+import telebot
+from telebot import types
 
-import os
-import sqlite3
-from telegram import (
-    Update,
-    InlineKeyboardButton,
-    InlineKeyboardMarkup
-)
-from telegram.ext import (
-    Application,
-    CommandHandler,
-    MessageHandler,
-    CallbackQueryHandler,
-    ConversationHandler,
-    ContextTypes,
-    filters
-)
+TOKEN = os.environ["BOT_TOKEN"]
+ADMIN_ID = int(os.environ["ADMIN_ID"])
+CHANNELS = ["@kanal1", "@kanal2"]  # o'zingiznikini yozing
+DB = "database.json"
 
-TOKEN = os.getenv("BOT_TOKEN")
-ADMIN_ID = int(os.getenv("ADMIN_ID", "0"))
-CHANNEL = os.getenv("CHANNEL_USERNAME", "@your_channel")
+bot = telebot.TeleBot(TOKEN)
 
-CODE, TITLE, VIDEO = range(3)
-
-db = sqlite3.connect("kinolar.db", check_same_thread=False)
-db.execute("""
-CREATE TABLE IF NOT EXISTS movies (
-    code TEXT PRIMARY KEY,
-    title TEXT,
-    file_id TEXT
-)
-""")
-db.commit()
-
-
-async def is_subscribed(user_id, context):
+def load():
     try:
-        member = await context.bot.get_chat_member(
-            chat_id=CHANNEL,
-            user_id=user_id
-        )
-        return member.status in ("creator", "administrator", "member") or (
-            member.status == "restricted" and member.is_member
-        )
+        with open(DB, "r", encoding="utf-8") as f:
+            return json.load(f)
     except Exception:
-        return False
+        return {}
 
+def save(d):
+    with open(DB, "w", encoding="utf-8") as f:
+        json.dump(d, f)
 
-def join_keyboard():
-    channel_name = CHANNEL.lstrip("@")
-    return InlineKeyboardMarkup([
-        [InlineKeyboardButton(
-            "📢 Kanalga a'zo bo'lish",
-            url=f"https://t.me/{channel_name}"
-        )],
-        [InlineKeyboardButton(
-            "✅ Obunani tekshirish",
-            callback_data="check_sub"
-        )]
-    ])
+def not_joined(uid):
+    res = []
+    for ch in CHANNELS:
+        try:
+            st = bot.get_chat_member(ch, uid).status
+            if st in ("left", "kicked"):
+                res.append(ch)
+        except Exception:
+            res.append(ch)
+    return res
 
+@bot.message_handler(commands=["start"])
+def start(m):
+    bot.send_message(m.chat.id, "Kino kodini yozing:")
 
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user = update.effective_user
-
-    if not await is_subscribed(user.id, context):
-        await update.message.reply_text(
-            "🎬 KINOBOX BOTga xush kelibsiz!\n\n"
-            "Botdan foydalanish uchun kanalimizga a'zo bo'ling.",
-            reply_markup=join_keyboard()
-        )
+@bot.message_handler(content_types=["video"])
+def add_movie(m):
+    if m.from_user.id != ADMIN_ID:
         return
+    db = load()
+    code = str(len(db) + 101)
+    db[code] = m.video.file_id
+    save(db)
+    bot.reply_to(m, "Saqlandi. Kod: " + code)
 
-    await update.message.reply_text(
-        "🎬 KINOBOX BOT\n\n"
-        "Kerakli kino kodini yuboring.\n"
-        "Masalan: 001"
-    )
+@bot.message_handler(content_types=["text"])
+def get_movie(m):
+    code = m.text.strip()
+    db = load()
+    if code not in db:
+        return bot.reply_to(m, "Bunday kod topilmadi")
+    nj = not_joined(m.from_user.id)
+    if nj:
+        kb = types.InlineKeyboardMarkup()
+        for c in nj:
+            kb.add(types.InlineKeyboardButton(c, url="https://t.me/" + c[1:]))
+        kb.add(types.InlineKeyboardButton("✅ Tekshirish", callback_data="check_" + code))
+        return bot.send_message(m.chat.id, "Avval kanallarga obuna bo'ling:", reply_markup=kb)
+    bot.send_video(m.chat.id, db[code])
 
+@bot.callback_query_handler(func=lambda c: c.data.startswith("check_"))
+def check(c):
+    code = c.data[6:]
+    if not_joined(c.from_user.id):
+        return bot.answer_callback_query(c.id, "Hali obuna bo'lmadingiz!", show_alert=True)
+    bot.send_video(c.message.chat.id, load()[code])
 
-async def check_sub(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
+class H(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200); self.end_headers(); self.wfile.write(b"ok")
 
-    if await is_subscribed(query.from_user.id, context):
-        await query.edit_message_text(
-            "✅ Obuna tasdiqlandi!\n\n"
-            "🎬 Endi kino kodini yuboring."
-        )
-    else:
-        await query.answer(
-            "Avval kanalga a'zo bo'ling!",
-            show_alert=True
-        )
+def web():
+    HTTPServer(("0.0.0.0", int(os.environ.get("PORT", 10000))), H).serve_forever()
 
+threading.Thread(target=web, daemon=True).start()
+bot.infinity_polling()
 
-async def get_movie(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not await is_subscribed(update.effective_user.id, context):
-        await update.message.reply_text(
-            "Avval kanalga a'zo bo'ling.",
-            reply_markup=join_keyboard()
-        )
-        return
-
-    code = update.message.text.strip()
-
-    movie = db.execute(
-        "SELECT title, file_id FROM movies WHERE code=?",
-        (code,)
-    ).fetchone()
-
-    if movie:
-        title, file_id = movie
-        await update.message.reply_video(
-            video=file_id,
-            caption=f"🎬 {title}\n🔢 Kod: {code}"
-        )
-    else:
-        await update.message.reply_text(
-            "❌ Bunday koddagi kino topilmadi."
-        )
-
-
-async def add_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id != ADMIN_ID:
-        return ConversationHandler.END
-
-    await update.message.reply_text("🔢 Kino kodini yuboring:")
-    return CODE
-
-
-async def get_code(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    context.user_data["code"] = update.message.text.strip()
-    await update.message.reply_text("🎬 Kino nomini yuboring:")
-    return TITLE
-
-
-async def get_title(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    context.user_data["title"] = update.message.text.strip()
-    await update.message.reply_text("📹 Endi kino videosini yuboring:")
-    return VIDEO
-
-
-async def get_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not update.message.video:
-        await update.message.reply_text(
-            "Iltimos, videoni Telegram video shaklida yuboring."
-        )
-        return VIDEO
-
-    code = context.user_data["code"]
-    title = context.user_data["title"]
-    file_id = update.message.video.file_id
-
-    db.execute(
-        "INSERT OR REPLACE INTO movies VALUES (?, ?, ?)",
-        (code, title, file_id)
-    )
-    db.commit()
-
-    await update.message.reply_text(
-        f"✅ Kino saqlandi!\n\n"
-        f"🎬 Nomi: {title}\n"
-        f"🔢 Kodi: {code}"
-    )
-
-    context.user_data.clear()
-    return ConversationHandler.END
-
-
-async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    context.user_data.clear()
-    await update.message.reply_text("❌ Amal bekor qilindi.")
-    return ConversationHandler.END
-
-
-def main():
-    if not TOKEN or not ADMIN_ID:
-        raise ValueError("BOT_TOKEN yoki ADMIN_ID sozlanmagan!")
-
-    app = Application.builder().token(TOKEN).build()
-
-    conversation = ConversationHandler(
-        entry_points=[CommandHandler("add", add_start)],
-        states={
-            CODE: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_code)],
-            TITLE: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_title)],
-            VIDEO: [MessageHandler(filters.VIDEO, get_video)]
-        },
-        fallbacks=[CommandHandler("cancel", cancel)],
-        allow_reentry=True
-    )
-
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CallbackQueryHandler(check_sub, pattern="^check_sub$"))
-    app.add_handler(conversation)
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, get_movie))
-
-    print("KINOBOX BOT ishga tushdi!")
-    app.run_polling()
-
-
-if __name__ == "__main__":
-    main()
