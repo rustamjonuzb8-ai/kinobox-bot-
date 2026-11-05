@@ -5,9 +5,24 @@ from telebot import types
 
 TOKEN = os.environ["BOT_TOKEN"]
 ADMIN_ID = int(os.environ["ADMIN_ID"])
-# Majburiy obuna kanallari: Render'da CHANNELS o'zgaruvchisiga vergul bilan yozing,
-# masalan: @kanal1,@kanal2
-CHANNELS = [c.strip() for c in os.environ.get("CHANNELS", "@kanal1,@kanal2").split(",") if c.strip()]
+# Majburiy obuna kanallari: Render'da CHANNELS o'zgaruvchisiga vergul bilan yozing.
+# Ommaviy kanal:  @kanal1
+# Yopiq kanal:    -1001234567890|https://t.me/+taklifhavolasi   (ID|havola)
+def parse_channels(raw):
+    res = []
+    for item in raw.split(","):
+        item = item.strip()
+        if not item:
+            continue
+        if "|" in item:
+            cid, link = item.split("|", 1)
+            res.append({"id": int(cid.strip()), "link": link.strip()})
+        else:
+            res.append({"id": item, "link": "https://t.me/" + item.lstrip("@")})
+    return res
+
+
+CHANNELS = parse_channels(os.environ.get("CHANNELS", ""))
 DB = os.environ.get("DB_PATH", "database.json")
 
 bot = telebot.TeleBot(TOKEN)
@@ -32,20 +47,20 @@ def not_joined(uid):
     res = []
     for ch in CHANNELS:
         try:
-            st = bot.get_chat_member(ch, uid).status
+            st = bot.get_chat_member(ch["id"], uid).status
             if st in ("left", "kicked"):
                 res.append(ch)
         except Exception as e:
-            # Odatda: bot kanalda admin emas yoki kanal nomi noto'g'ri.
+            # Odatda: bot kanalda admin emas yoki kanal ID'si noto'g'ri.
             # Hamma foydalanuvchi bloklanib qolmasligi uchun kanalni o'tkazib yuboramiz
             # va adminni bir marta ogohlantiramiz.
-            if ch not in warned:
-                warned.add(ch)
+            if ch["id"] not in warned:
+                warned.add(ch["id"])
                 try:
                     bot.send_message(
                         ADMIN_ID,
-                        "⚠️ " + ch + " kanalini tekshirib bo'lmadi: " + str(e)
-                        + "\nBotni shu kanalga ADMIN qiling va nomini tekshiring.",
+                        "⚠️ " + str(ch["id"]) + " kanalini tekshirib bo'lmadi: " + str(e)
+                        + "\nBotni shu kanalga ADMIN qiling va ID'sini tekshiring.",
                     )
                 except Exception:
                     pass
@@ -54,10 +69,25 @@ def not_joined(uid):
 
 def sub_keyboard(nj, code=""):
     kb = types.InlineKeyboardMarkup()
-    for c in nj:
-        kb.add(types.InlineKeyboardButton("📢 " + c, url="https://t.me/" + c.lstrip("@")))
+    for ch in nj:
+        n = CHANNELS.index(ch) + 1
+        kb.add(types.InlineKeyboardButton("📢 " + str(n) + "-kanal", url=ch["link"]))
     kb.add(types.InlineKeyboardButton("✅ Tekshirish", callback_data="check_" + code))
     return kb
+
+
+@bot.my_chat_member_handler()
+def on_added(u):
+    """Bot kanalga admin qilinsa, kanal ID'sini adminga yuboradi (CHANNELS uchun kerak)."""
+    try:
+        if u.chat.type in ("channel", "supergroup", "group") and u.new_chat_member.status == "administrator":
+            bot.send_message(
+                ADMIN_ID,
+                "✅ Kanal: " + str(u.chat.title) + "\nID: " + str(u.chat.id)
+                + "\n\nCHANNELS ga shunday yozing:\n" + str(u.chat.id) + "|<taklif_havolasi>",
+            )
+    except Exception:
+        pass
 
 
 def ask_to_join(chat_id, nj, code=""):
