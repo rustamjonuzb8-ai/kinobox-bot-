@@ -51,6 +51,27 @@ def save_confirmed():
 
 confirmed = load_confirmed()  # "Tekshirish" bosgan foydalanuvchilar (faqat havolali kanallar uchun)
 
+REQUESTS = os.environ.get("REQUESTS_PATH", "requests.json")
+
+
+def load_requests():
+    try:
+        with open(REQUESTS, "r", encoding="utf-8") as f:
+            return {k: set(v) for k, v in json.load(f).items()}
+    except Exception:
+        return {}
+
+
+def save_requests():
+    try:
+        with open(REQUESTS, "w", encoding="utf-8") as f:
+            json.dump({k: sorted(v) for k, v in requested.items()}, f)
+    except Exception:
+        pass
+
+
+requested = load_requests()  # kanal ID -> qo'shilish so'rovi yuborgan foydalanuvchilar
+
 
 def load():
     try:
@@ -76,7 +97,8 @@ def not_joined(uid):
             continue
         try:
             st = bot.get_chat_member(ch["id"], uid).status
-            if st in ("left", "kicked"):
+            # So'rov yuborgan (hali qabul qilinmagan) odam ham obuna bo'lgan hisoblanadi
+            if st in ("left", "kicked") and uid not in requested.get(str(ch["id"]), ()):
                 res.append(ch)
         except Exception as e:
             # Odatda: bot kanalda admin emas yoki kanal ID'si noto'g'ri.
@@ -102,6 +124,13 @@ def sub_keyboard(nj, code=""):
         kb.add(types.InlineKeyboardButton("📢 " + str(n) + "-kanal", url=ch["link"]))
     kb.add(types.InlineKeyboardButton("✅ Tekshirish", callback_data="check_" + code))
     return kb
+
+
+@bot.chat_join_request_handler()
+def on_join_request(r):
+    """Kanalga qo'shilish so'rovini eslab qoladi (bot kanalda admin bo'lishi kerak)."""
+    requested.setdefault(str(r.chat.id), set()).add(r.from_user.id)
+    save_requests()
 
 
 @bot.my_chat_member_handler()
