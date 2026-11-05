@@ -14,7 +14,10 @@ def parse_channels(raw):
         item = item.strip()
         if not item:
             continue
-        if "|" in item:
+        if item.startswith("http"):
+            # Faqat havola: a'zolik tekshirilmaydi (so'rov bilan qo'shiladigan kanallar uchun)
+            res.append({"id": None, "link": item})
+        elif "|" in item:
             cid, link = item.split("|", 1)
             res.append({"id": int(cid.strip()), "link": link.strip()})
         else:
@@ -27,6 +30,26 @@ DB = os.environ.get("DB_PATH", "database.json")
 
 bot = telebot.TeleBot(TOKEN)
 warned = set()  # adminni bir xil xato haqida qayta-qayta bezovta qilmaslik uchun
+USERS = os.environ.get("USERS_PATH", "users.json")
+
+
+def load_confirmed():
+    try:
+        with open(USERS, "r", encoding="utf-8") as f:
+            return set(json.load(f))
+    except Exception:
+        return set()
+
+
+def save_confirmed():
+    try:
+        with open(USERS, "w", encoding="utf-8") as f:
+            json.dump(sorted(confirmed), f)
+    except Exception:
+        pass
+
+
+confirmed = load_confirmed()  # "Tekshirish" bosgan foydalanuvchilar (faqat havolali kanallar uchun)
 
 
 def load():
@@ -46,6 +69,11 @@ def not_joined(uid):
     """Foydalanuvchi obuna bo'lmagan kanallar ro'yxati."""
     res = []
     for ch in CHANNELS:
+        if ch["id"] is None:
+            # Tekshirib bo'lmaydigan kanal: foydalanuvchi "Tekshirish" bosganda ishonamiz
+            if uid not in confirmed:
+                res.append(ch)
+            continue
         try:
             st = bot.get_chat_member(ch["id"], uid).status
             if st in ("left", "kicked"):
@@ -136,6 +164,8 @@ def get_movie(m):
 def check(c):
     code = c.data[6:]
     if c.from_user.id != ADMIN_ID:
+        confirmed.add(c.from_user.id)
+        save_confirmed()
         nj = not_joined(c.from_user.id)
         if nj:
             return bot.answer_callback_query(c.id, "Hali hamma kanalga obuna bo'lmadingiz!", show_alert=True)
